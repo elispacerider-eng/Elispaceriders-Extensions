@@ -1,0 +1,467 @@
+
+(function (Scratch) {
+  "use strict";
+
+  class PhoneMotion3D {
+    constructor() {
+      this.running = false;
+      this.orientationSeen = false;
+      this.motionSeen = false;
+      this.permission = "not requested";
+      this.status = "Sensors stopped";
+
+      this.rawAngles = { x: 0, y: 0, z: 0 };
+      this.zeroAngles = { x: 0, y: 0, z: 0 };
+      this.rotationData = { x: 0, y: 0, z: 0 };
+      this.accelerationData = { x: 0, y: 0, z: 0 };
+      this.positionData = { x: 0, y: 0, z: 0 };
+      this.velocityData = { x: 0, y: 0, z: 0 };
+      this.rotationRateData = { x: 0, y: 0, z: 0 };
+
+      this.sensitivity = 1;
+      this.damping = 0.90;
+      this.maxPosition = 100;
+      this.lastMotionTime = 0;
+
+      this.onOrientation = this.onOrientation.bind(this);
+      this.onMotion = this.onMotion.bind(this);
+    }
+
+    getInfo() {
+      return {
+        id: "phonemotion3d",
+        name: "Phone Motion 3D",
+        color1: "#2678C8",
+        color2: "#1D61A5",
+        color3: "#164A82",
+        blocks: [
+          {
+            opcode: "startSensors",
+            blockType: Scratch.BlockType.COMMAND,
+            text: "start phone sensors"
+          },
+          {
+            opcode: "stopSensors",
+            blockType: Scratch.BlockType.COMMAND,
+            text: "stop phone sensors"
+          },
+          {
+            opcode: "calibrate",
+            blockType: Scratch.BlockType.COMMAND,
+            text: "set current position and rotation as zero"
+          },
+          {
+            opcode: "resetPosition",
+            blockType: Scratch.BlockType.COMMAND,
+            text: "reset movement position"
+          },
+          {
+            opcode: "resetRotation",
+            blockType: Scratch.BlockType.COMMAND,
+            text: "reset rotation"
+          },
+          "---",
+          {
+            opcode: "position",
+            blockType: Scratch.BlockType.REPORTER,
+            text: "phone position [AXIS]",
+            arguments: {
+              AXIS: {
+                type: Scratch.ArgumentType.STRING,
+                menu: "axis"
+              }
+            }
+          },
+          {
+            opcode: "rotation",
+            blockType: Scratch.BlockType.REPORTER,
+            text: "phone rotation [AXIS]",
+            arguments: {
+              AXIS: {
+                type: Scratch.ArgumentType.STRING,
+                menu: "axis"
+              }
+            }
+          },
+          {
+            opcode: "rawRotation",
+            blockType: Scratch.BlockType.REPORTER,
+            text: "raw phone rotation [AXIS]",
+            arguments: {
+              AXIS: {
+                type: Scratch.ArgumentType.STRING,
+                menu: "axis"
+              }
+            }
+          },
+          {
+            opcode: "acceleration",
+            blockType: Scratch.BlockType.REPORTER,
+            text: "phone acceleration [AXIS]",
+            arguments: {
+              AXIS: {
+                type: Scratch.ArgumentType.STRING,
+                menu: "axis"
+              }
+            }
+          },
+          {
+            opcode: "rotationRate",
+            blockType: Scratch.BlockType.REPORTER,
+            text: "phone rotation speed [AXIS]",
+            arguments: {
+              AXIS: {
+                type: Scratch.ArgumentType.STRING,
+                menu: "axis"
+              }
+            }
+          },
+          {
+            opcode: "sensorStatus",
+            blockType: Scratch.BlockType.REPORTER,
+            text: "phone sensor status"
+          },
+          {
+            opcode: "supported",
+            blockType: Scratch.BlockType.BOOLEAN,
+            text: "phone sensors supported?"
+          },
+          {
+            opcode: "permissionStatus",
+            blockType: Scratch.BlockType.REPORTER,
+            text: "phone sensor permission"
+          },
+          {
+            opcode: "setSensitivity",
+            blockType: Scratch.BlockType.COMMAND,
+            text: "set movement sensitivity to [VALUE]",
+            arguments: {
+              VALUE: {
+                type: Scratch.ArgumentType.NUMBER,
+                defaultValue: 1
+              }
+            }
+          },
+          {
+            opcode: "setDamping",
+            blockType: Scratch.BlockType.COMMAND,
+            text: "set movement damping to [VALUE]",
+            arguments: {
+              VALUE: {
+                type: Scratch.ArgumentType.NUMBER,
+                defaultValue: 0.90
+              }
+            }
+          },
+          {
+            opcode: "setMaxPosition",
+            blockType: Scratch.BlockType.COMMAND,
+            text: "limit estimated position to [VALUE]",
+            arguments: {
+              VALUE: {
+                type: Scratch.ArgumentType.NUMBER,
+                defaultValue: 100
+              }
+            }
+          }
+        ],
+        menus: {
+          axis: {
+            acceptReporters: true,
+            items: ["X", "Y", "Z"]
+          }
+        }
+      };
+    }
+
+    clamp(value, min, max) {
+      return Math.max(min, Math.min(max, value));
+    }
+
+    axisName(value) {
+      const axis = String(value).toLowerCase();
+      return axis === "x" || axis === "y" ? axis : "z";
+    }
+
+    wrapAngle(angle) {
+      return ((angle + 180) % 360 + 360) % 360 - 180;
+    }
+
+    async startSensors() {
+      if (this.running) {
+        this.status = "Sensors already running";
+        return;
+      }
+
+      if (typeof window === "undefined") {
+        this.status = "Browser environment unavailable";
+        return;
+      }
+
+      this.status = "Requesting sensor permission";
+
+      try {
+        if (
+          typeof DeviceOrientationEvent !== "undefined" &&
+          typeof DeviceOrientationEvent.requestPermission === "function"
+        ) {
+          const result =
+            await DeviceOrientationEvent.requestPermission();
+
+          if (result !== "granted") {
+            this.permission = "denied";
+            this.status = "Orientation permission denied";
+            return;
+          }
+        }
+
+        if (
+          typeof DeviceMotionEvent !== "undefined" &&
+          typeof DeviceMotionEvent.requestPermission === "function"
+        ) {
+          const result = await DeviceMotionEvent.requestPermission();
+
+          if (result !== "granted") {
+            this.permission = "denied";
+            this.status = "Motion permission denied";
+            return;
+          }
+        }
+
+        window.addEventListener(
+          "deviceorientation",
+          this.onOrientation,
+          true
+        );
+        window.addEventListener(
+          "devicemotion",
+          this.onMotion,
+          true
+        );
+
+        this.running = true;
+        this.permission = "granted or not required";
+        this.status = "Waiting for sensor data";
+      } catch (error) {
+        this.permission = "error";
+        this.status =
+          "Sensor startup failed: " +
+          (error && error.message ? error.message : String(error));
+      }
+    }
+
+    stopSensors() {
+      if (typeof window !== "undefined") {
+        window.removeEventListener(
+          "deviceorientation",
+          this.onOrientation,
+          true
+        );
+        window.removeEventListener(
+          "devicemotion",
+          this.onMotion,
+          true
+        );
+      }
+
+      this.running = false;
+      this.status = "Sensors stopped";
+    }
+
+    onOrientation(event) {
+      if (
+        typeof event.alpha !== "number" ||
+        typeof event.beta !== "number" ||
+        typeof event.gamma !== "number"
+      ) {
+        return;
+      }
+
+      this.rawAngles.x = event.beta;
+      this.rawAngles.y = event.gamma;
+      this.rawAngles.z = event.alpha;
+
+      this.rotationData.x = this.wrapAngle(
+        event.beta - this.zeroAngles.x
+      );
+      this.rotationData.y = this.wrapAngle(
+        event.gamma - this.zeroAngles.y
+      );
+      this.rotationData.z = this.wrapAngle(
+        event.alpha - this.zeroAngles.z
+      );
+
+      this.orientationSeen = true;
+      this.status = this.motionSeen
+        ? "Sensors active"
+        : "Orientation active; waiting for motion";
+    }
+
+    onMotion(event) {
+      const rate = event.rotationRate;
+
+      if (rate) {
+        this.rotationRateData.x = Number(rate.beta) || 0;
+        this.rotationRateData.y = Number(rate.gamma) || 0;
+        this.rotationRateData.z = Number(rate.alpha) || 0;
+      }
+
+      const acceleration = event.acceleration;
+
+      if (!acceleration) {
+        this.motionSeen = true;
+        this.status =
+          "Motion event received; linear acceleration unavailable";
+        return;
+      }
+
+      this.accelerationData.x = Number(acceleration.x) || 0;
+      this.accelerationData.y = Number(acceleration.y) || 0;
+      this.accelerationData.z = Number(acceleration.z) || 0;
+
+      const now = Date.now();
+
+      if (this.lastMotionTime !== 0) {
+        const dt = this.clamp(
+          (now - this.lastMotionTime) / 1000,
+          0,
+          0.05
+        );
+
+        if (dt > 0 && this.running) {
+          for (const axis of ["x", "y", "z"]) {
+            const a =
+              this.accelerationData[axis] * this.sensitivity;
+
+            this.velocityData[axis] += a * dt;
+            this.velocityData[axis] *=
+              Math.pow(this.damping, dt * 60);
+
+            this.positionData[axis] +=
+              this.velocityData[axis] * dt;
+
+            this.positionData[axis] = this.clamp(
+              this.positionData[axis],
+              -this.maxPosition,
+              this.maxPosition
+            );
+
+            if (
+              Math.abs(this.positionData[axis]) >= this.maxPosition
+            ) {
+              this.velocityData[axis] = 0;
+            }
+          }
+        }
+      }
+
+      this.lastMotionTime = now;
+      this.motionSeen = true;
+      this.status = this.orientationSeen
+        ? "Sensors active"
+        : "Motion active; waiting for orientation";
+    }
+
+    calibrate() {
+      this.zeroAngles.x = this.rawAngles.x;
+      this.zeroAngles.y = this.rawAngles.y;
+      this.zeroAngles.z = this.rawAngles.z;
+
+      this.resetPosition();
+      this.status = "Calibrated";
+    }
+
+    resetPosition() {
+      for (const axis of ["x", "y", "z"]) {
+        this.positionData[axis] = 0;
+        this.velocityData[axis] = 0;
+      }
+
+      this.lastMotionTime = Date.now();
+    }
+
+    resetRotation() {
+      this.zeroAngles.x = this.rawAngles.x;
+      this.zeroAngles.y = this.rawAngles.y;
+      this.zeroAngles.z = this.rawAngles.z;
+
+      for (const axis of ["x", "y", "z"]) {
+        this.rotationData[axis] = 0;
+      }
+    }
+
+    // Block methods must not share names with data properties.
+    position(args) {
+      return this.positionData[this.axisName(args.AXIS)];
+    }
+
+    rotation(args) {
+      return this.rotationData[this.axisName(args.AXIS)];
+    }
+
+    rawRotation(args) {
+      return this.rawAngles[this.axisName(args.AXIS)];
+    }
+
+    acceleration(args) {
+      return this.accelerationData[this.axisName(args.AXIS)];
+    }
+
+    rotationRate(args) {
+      return this.rotationRateData[this.axisName(args.AXIS)];
+    }
+
+    sensorStatus() {
+      return this.status;
+    }
+
+    supported() {
+      return (
+        typeof window !== "undefined" &&
+        (
+          "DeviceOrientationEvent" in window ||
+          "DeviceMotionEvent" in window
+        )
+      );
+    }
+
+    permissionStatus() {
+      return this.permission;
+    }
+
+    setSensitivity(args) {
+      this.sensitivity = this.clamp(
+        Number(args.VALUE) || 0,
+        0,
+        20
+      );
+    }
+
+    setDamping(args) {
+      const value = Number(args.VALUE);
+      this.damping = this.clamp(
+        Number.isFinite(value) ? value : 0.90,
+        0,
+        0.999
+      );
+    }
+
+    setMaxPosition(args) {
+      this.maxPosition = this.clamp(
+        Math.abs(Number(args.VALUE) || 100),
+        1,
+        100000
+      );
+
+      for (const axis of ["x", "y", "z"]) {
+        this.positionData[axis] = this.clamp(
+          this.positionData[axis],
+          -this.maxPosition,
+          this.maxPosition
+        );
+      }
+    }
+  }
+
+  Scratch.extensions.register(new PhoneMotion3D());
+})(Scratch);
