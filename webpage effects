@@ -1,0 +1,620 @@
+
+(function (Scratch) {
+    "use strict";
+
+    if (!Scratch.extensions.unsandboxed) {
+        throw new Error("Webpage Effects requires an unsandboxed extension.");
+    }
+
+    const EFFECTS = [
+        "blur", "grayscale", "invert", "sepia",
+        "saturation", "brightness", "contrast",
+        "hue rotation", "glow", "warm tint",
+        "cool tint", "red tint", "green tint",
+        "blue tint", "rainbow colors", "scanlines",
+        "vignette", "glitch", "flicker"
+    ];
+
+    const ANIMATIONS = [
+        "wiggle", "shake", "wobble", "bounce",
+        "sway", "spin", "flip", "tilt",
+        "zoom in", "zoom out", "pulse",
+        "float", "swing", "jitter", "stretch",
+        "flash", "flicker", "glitch",
+        "rainbow", "hue cycle", "fade in",
+        "fade out", "none"
+    ];
+
+    const KEYFRAMES = {
+        "wiggle": [
+            "0%,100%{transform:rotate(0)}",
+            "25%{transform:rotate(-2deg)}",
+            "75%{transform:rotate(2deg)}"
+        ],
+        "shake": [
+            "0%,100%{transform:translate(0,0)}",
+            "20%{transform:translate(-8px,2px)}",
+            "40%{transform:translate(8px,-2px)}",
+            "60%{transform:translate(-6px,1px)}",
+            "80%{transform:translate(6px,0)}"
+        ],
+        "wobble": [
+            "0%,100%{transform:rotate(0)}",
+            "20%{transform:rotate(-5deg)}",
+            "40%{transform:rotate(4deg)}",
+            "60%{transform:rotate(-3deg)}",
+            "80%{transform:rotate(2deg)}"
+        ],
+        "bounce": [
+            "0%,100%{transform:translateY(0)}",
+            "50%{transform:translateY(-24px)}"
+        ],
+        "sway": [
+            "0%,100%{transform:translateX(0) rotate(0)}",
+            "50%{transform:translateX(12px) rotate(2deg)}"
+        ],
+        "spin": [
+            "0%{transform:rotate(0)}",
+            "100%{transform:rotate(360deg)}"
+        ],
+        "flip": [
+            "0%,100%{transform:perspective(600px) rotateY(0)}",
+            "50%{transform:perspective(600px) rotateY(180deg)}"
+        ],
+        "tilt": [
+            "0%,100%{transform:rotate(0)}",
+            "50%{transform:rotate(8deg)}"
+        ],
+        "zoom in": [
+            "0%,100%{transform:scale(1)}",
+            "50%{transform:scale(1.15)}"
+        ],
+        "zoom out": [
+            "0%,100%{transform:scale(1)}",
+            "50%{transform:scale(.85)}"
+        ],
+        "pulse": [
+            "0%,100%{transform:scale(1)}",
+            "50%{transform:scale(1.06)}"
+        ],
+        "float": [
+            "0%,100%{transform:translateY(0)}",
+            "50%{transform:translateY(-12px)}"
+        ],
+        "swing": [
+            "0%,100%{transform:rotate(0)}",
+            "25%{transform:rotate(7deg)}",
+            "75%{transform:rotate(-7deg)}"
+        ],
+        "jitter": [
+            "0%,100%{transform:translate(0,0)}",
+            "25%{transform:translate(2px,-2px)}",
+            "50%{transform:translate(-2px,2px)}",
+            "75%{transform:translate(2px,2px)}"
+        ],
+        "stretch": [
+            "0%,100%{transform:scale(1,1)}",
+            "50%{transform:scale(1.08,.92)}"
+        ],
+        "flash": [
+            "0%,100%{opacity:1}",
+            "50%{opacity:.2}"
+        ],
+        "flicker": [
+            "0%,100%{opacity:1}",
+            "15%{opacity:.55}",
+            "30%{opacity:1}",
+            "45%{opacity:.7}",
+            "60%{opacity:.3}",
+            "75%{opacity:1}"
+        ],
+        "glitch": [
+            "0%,100%{transform:translate(0,0)}",
+            "20%{transform:translate(-5px,2px) skewX(2deg)}",
+            "40%{transform:translate(5px,-2px) skewX(-2deg)}",
+            "60%{transform:translate(-3px,0)}",
+            "80%{transform:translate(3px,1px)}"
+        ],
+        "rainbow": [
+            "0%{filter:hue-rotate(0deg)}",
+            "100%{filter:hue-rotate(360deg)}"
+        ],
+        "hue cycle": [
+            "0%{filter:hue-rotate(0deg)}",
+            "100%{filter:hue-rotate(360deg)}"
+        ],
+        "fade in": [
+            "0%{opacity:0}",
+            "100%{opacity:1}"
+        ],
+        "fade out": [
+            "0%{opacity:1}",
+            "100%{opacity:0}"
+        ]
+    };
+
+    class WebpageEffects {
+        constructor() {
+            this.effects = {};
+            this.animationName = "none";
+            this.speed = 1;
+            this.intensity = 100;
+            this.loop = true;
+            this.tintColor = "#ff00ff";
+            this.tintOpacity = 0;
+            this.scanlines = 0;
+            this.vignette = 0;
+            this.overlay = null;
+            this.styleTag = null;
+            this.original = null;
+        }
+
+        getInfo() {
+            return {
+                id: "wholeWebpageEffects",
+                name: "Webpage Effects",
+                color1: "#A64DFF",
+                color2: "#8838D4",
+                color3: "#6B25AC",
+                blocks: [
+                    {
+                        opcode: "setEffect",
+                        blockType: Scratch.BlockType.COMMAND,
+                        text: "set webpage effect [EFFECT] intensity [AMOUNT] %",
+                        arguments: {
+                            EFFECT: {
+                                type: Scratch.ArgumentType.STRING,
+                                menu: "effects"
+                            },
+                            AMOUNT: {
+                                type: Scratch.ArgumentType.NUMBER,
+                                defaultValue: 50
+                            }
+                        }
+                    },
+                    {
+                        opcode: "clearEffect",
+                        blockType: Scratch.BlockType.COMMAND,
+                        text: "clear webpage effect [EFFECT]",
+                        arguments: {
+                            EFFECT: {
+                                type: Scratch.ArgumentType.STRING,
+                                menu: "effects"
+                            }
+                        }
+                    },
+                    {
+                        opcode: "setColor",
+                        blockType: Scratch.BlockType.COMMAND,
+                        text: "tint webpage color [COLOR] opacity [AMOUNT] %",
+                        arguments: {
+                            COLOR: {
+                                type: Scratch.ArgumentType.COLOR
+                            },
+                            AMOUNT: {
+                                type: Scratch.ArgumentType.NUMBER,
+                                defaultValue: 30
+                            }
+                        }
+                    },
+                    {
+                        opcode: "setAnimation",
+                        blockType: Scratch.BlockType.COMMAND,
+                        text: "animate webpage [ANIMATION] speed [SPEED] seconds",
+                        arguments: {
+                            ANIMATION: {
+                                type: Scratch.ArgumentType.STRING,
+                                menu: "animations"
+                            },
+                            SPEED: {
+                                type: Scratch.ArgumentType.NUMBER,
+                                defaultValue: 1
+                            }
+                        }
+                    },
+                    {
+                        opcode: "setIntensity",
+                        blockType: Scratch.BlockType.COMMAND,
+                        text: "set animation intensity to [AMOUNT] %",
+                        arguments: {
+                            AMOUNT: {
+                                type: Scratch.ArgumentType.NUMBER,
+                                defaultValue: 100
+                            }
+                        }
+                    },
+                    {
+                        opcode: "setLoop",
+                        blockType: Scratch.BlockType.COMMAND,
+                        text: "set animation looping [LOOP]",
+                        arguments: {
+                            LOOP: {
+                                type: Scratch.ArgumentType.STRING,
+                                menu: "loopOptions"
+                            }
+                        }
+                    },
+                    {
+                        opcode: "stopAnimation",
+                        blockType: Scratch.BlockType.COMMAND,
+                        text: "stop webpage animation"
+                    },
+                    {
+                        opcode: "setScanlines",
+                        blockType: Scratch.BlockType.COMMAND,
+                        text: "set scanlines intensity [AMOUNT] %",
+                        arguments: {
+                            AMOUNT: {
+                                type: Scratch.ArgumentType.NUMBER,
+                                defaultValue: 30
+                            }
+                        }
+                    },
+                    {
+                        opcode: "setVignette",
+                        blockType: Scratch.BlockType.COMMAND,
+                        text: "set dark vignette intensity [AMOUNT] %",
+                        arguments: {
+                            AMOUNT: {
+                                type: Scratch.ArgumentType.NUMBER,
+                                defaultValue: 30
+                            }
+                        }
+                    },
+                    {
+                        opcode: "reset",
+                        blockType: Scratch.BlockType.COMMAND,
+                        text: "reset all webpage effects"
+                    },
+                    {
+                        opcode: "getAnimation",
+                        blockType: Scratch.BlockType.REPORTER,
+                        text: "current webpage animation"
+                    }
+                ],
+                menus: {
+                    effects: {
+                        acceptReporters: false,
+                        items: EFFECTS
+                    },
+                    animations: {
+                        acceptReporters: false,
+                        items: ANIMATIONS
+                    },
+                    loopOptions: {
+                        acceptReporters: false,
+                        items: ["on", "off"]
+                    }
+                }
+            };
+        }
+
+        ensureSetup() {
+            if (!document.body) return false;
+
+            if (!this.original) {
+                const body = document.body;
+                const root = document.documentElement;
+
+                this.original = {
+                    body: {
+                        filter: body.style.getPropertyValue("filter"),
+                        filterPriority: body.style.getPropertyPriority("filter"),
+                        animation: body.style.getPropertyValue("animation"),
+                        animationPriority: body.style.getPropertyPriority("animation")
+                    },
+                    root: {
+                        filter: root.style.getPropertyValue("filter"),
+                        filterPriority: root.style.getPropertyPriority("filter")
+                    }
+                };
+            }
+
+            if (!this.styleTag) {
+                this.styleTag = document.createElement("style");
+                this.styleTag.textContent = `
+                    @keyframes wpe_scanlines {
+                        from { background-position: 0 0; }
+                        to { background-position: 0 8px; }
+                    }
+                    @keyframes wpe_rainbow {
+                        from { filter: hue-rotate(0deg); }
+                        to { filter: hue-rotate(360deg); }
+                    }
+                `;
+                document.head.appendChild(this.styleTag);
+            }
+
+            if (!this.overlay) {
+                this.overlay = document.createElement("div");
+                this.overlay.setAttribute("aria-hidden", "true");
+                Object.assign(this.overlay.style, {
+                    position: "fixed",
+                    inset: "0",
+                    width: "100%",
+                    height: "100%",
+                    pointerEvents: "none",
+                    zIndex: "2147483647",
+                    background: "transparent",
+                    opacity: "1"
+                });
+                document.documentElement.appendChild(this.overlay);
+            }
+
+            return true;
+        }
+
+        clamp(value, min, max) {
+            value = Number(value);
+            if (!Number.isFinite(value)) value = min;
+            return Math.max(min, Math.min(max, value));
+        }
+
+        setEffect(args) {
+            if (!this.ensureSetup()) return;
+
+            const effect = String(args.EFFECT);
+            const amount = this.clamp(args.AMOUNT, 0, 100);
+
+            if (amount === 0) {
+                delete this.effects[effect];
+            } else {
+                this.effects[effect] = amount;
+            }
+
+            this.render();
+        }
+
+        clearEffect(args) {
+            delete this.effects[String(args.EFFECT)];
+            this.render();
+        }
+
+        setColor(args) {
+            if (!this.ensureSetup()) return;
+
+            this.tintColor = String(args.COLOR || "#ff00ff");
+            this.tintOpacity = this.clamp(args.AMOUNT, 0, 100) / 100;
+            this.render();
+        }
+
+        setAnimation(args) {
+            if (!this.ensureSetup()) return;
+
+            this.animationName = String(args.ANIMATION);
+            this.speed = this.clamp(args.SPEED, 0.1, 60);
+            this.applyAnimation();
+        }
+
+        setIntensity(args) {
+            this.intensity = this.clamp(args.AMOUNT, 0, 100);
+            this.applyAnimation();
+        }
+
+        setLoop(args) {
+            this.loop = String(args.LOOP) === "on";
+            this.applyAnimation();
+        }
+
+        stopAnimation() {
+            this.animationName = "none";
+
+            if (document.body) {
+                document.body.style.animation = "none";
+                document.body.style.transform = "";
+                document.body.style.opacity = "";
+            }
+        }
+
+        applyAnimation() {
+            if (!this.ensureSetup()) return;
+
+            const name = this.animationName;
+            const body = document.body;
+
+            if (name === "none" || !KEYFRAMES[name]) {
+                body.style.animation = "none";
+                return;
+            }
+
+            const frames = KEYFRAMES[name].join("\n");
+            const id = "wpe_anim_" + name.replace(/[^a-z0-9]/gi, "_");
+
+            let animationStyle = this.styleTag.textContent;
+            const start = animationStyle.indexOf("@keyframes " + id + " {");
+
+            if (start !== -1) {
+                const next = animationStyle.indexOf("}", start);
+                if (next !== -1) {
+                    animationStyle =
+                        animationStyle.slice(0, start) +
+                        animationStyle.slice(next + 1);
+                }
+            }
+
+            this.styleTag.textContent =
+                animationStyle +
+                "\n@keyframes " + id + " {\n" + frames + "\n}\n";
+
+            const scale = this.intensity / 100;
+            const duration = Math.max(0.1, this.speed);
+
+            body.style.animation = "none";
+            void body.offsetWidth;
+
+            body.style.animation =
+                id + " " + duration + "s " +
+                (name === "fade in" || name === "fade out"
+                    ? "ease"
+                    : "ease-in-out") +
+                " " + (this.loop ? "infinite" : "1") + " both";
+
+            // Intensity scales transform-based animations through a wrapper
+            // only when a suitable wrapper exists. Other animations use
+            // their default keyframe strength.
+            body.dataset.wpeIntensity = String(scale);
+        }
+
+        setScanlines(args) {
+            this.scanlines = this.clamp(args.AMOUNT, 0, 100);
+            this.render();
+        }
+
+        setVignette(args) {
+            this.vignette = this.clamp(args.AMOUNT, 0, 100);
+            this.render();
+        }
+
+        render() {
+            if (!this.ensureSetup()) return;
+
+            const filters = [];
+            const e = this.effects;
+
+            if (e["blur"]) {
+                filters.push("blur(" + (e["blur"] / 100 * 12) + "px)");
+            }
+            if (e["grayscale"]) {
+                filters.push("grayscale(" + (e["grayscale"] / 100) + ")");
+            }
+            if (e["invert"]) {
+                filters.push("invert(" + (e["invert"] / 100) + ")");
+            }
+            if (e["sepia"]) {
+                filters.push("sepia(" + (e["sepia"] / 100) + ")");
+            }
+            if (e["saturation"]) {
+                filters.push("saturate(" + (e["saturation"] / 50) + ")");
+            }
+            if (e["brightness"]) {
+                filters.push("brightness(" + (e["brightness"] / 50) + ")");
+            }
+            if (e["contrast"]) {
+                filters.push("contrast(" + (e["contrast"] / 50) + ")");
+            }
+            if (e["hue rotation"]) {
+                filters.push("hue-rotate(" + (e["hue rotation"] * 3.6) + "deg)");
+            }
+            if (e["glow"]) {
+                filters.push("drop-shadow(0 0 " +
+                    (e["glow"] / 5) + "px rgba(100,180,255,.9))");
+            }
+            if (e["warm tint"]) {
+                filters.push("sepia(" + (e["warm tint"] / 150) + ")");
+            }
+            if (e["cool tint"]) {
+                filters.push("hue-rotate(" + (e["cool tint"] / 4) + "deg)");
+            }
+            if (e["red tint"]) {
+                filters.push("sepia(" + (e["red tint"] / 100) + ")");
+            }
+            if (e["green tint"]) {
+                filters.push("hue-rotate(" + (e["green tint"] * 1.2) + "deg)");
+            }
+            if (e["blue tint"]) {
+                filters.push("hue-rotate(" + (180 + e["blue tint"]) + "deg)");
+            }
+            if (e["rainbow colors"]) {
+                filters.push("hue-rotate(" +
+                    ((Date.now() / 15) % 360) + "deg)");
+            }
+
+            document.body.style.filter = filters.length
+                ? filters.join(" ")
+                : "";
+
+            const backgrounds = [];
+
+            if (this.tintOpacity > 0) {
+                backgrounds.push(
+                    this.tintColor + Math.round(this.tintOpacity * 255)
+                        .toString(16).padStart(2, "0")
+                );
+            }
+
+            if (this.scanlines > 0) {
+                const alpha = Math.round(this.scanlines / 100 * 0.65);
+                backgrounds.push(
+                    "repeating-linear-gradient(to bottom, " +
+                    "rgba(0,0,0," + alpha + ") 0px, " +
+                    "rgba(0,0,0," + alpha + ") 1px, " +
+                    "transparent 1px, transparent 4px)"
+                );
+            }
+
+            if (this.vignette > 0) {
+                const alpha = this.vignette / 100 * 0.9;
+                backgrounds.push(
+                    "radial-gradient(ellipse at center, transparent 35%, " +
+                    "rgba(0,0,0," + alpha + ") 100%)"
+                );
+            }
+
+            this.overlay.style.background = backgrounds.length
+                ? backgrounds.join(", ")
+                : "transparent";
+
+            if (e["flicker"]) {
+                this.overlay.style.opacity =
+                    String(1 - (e["flicker"] / 100) * 0.25);
+            } else {
+                this.overlay.style.opacity = "1";
+            }
+        }
+
+        getAnimation() {
+            return this.animationName;
+        }
+
+        reset() {
+            this.effects = {};
+            this.tintOpacity = 0;
+            this.scanlines = 0;
+            this.vignette = 0;
+            this.animationName = "none";
+
+            if (this.original && document.body) {
+                const b = this.original.body;
+                const r = this.original.root;
+
+                if (b.filter) {
+                    document.body.style.setProperty(
+                        "filter", b.filter, b.filterPriority
+                    );
+                } else {
+                    document.body.style.removeProperty("filter");
+                }
+
+                if (b.animation) {
+                    document.body.style.setProperty(
+                        "animation", b.animation, b.animationPriority
+                    );
+                } else {
+                    document.body.style.removeProperty("animation");
+                }
+
+                if (r.filter) {
+                    document.documentElement.style.setProperty(
+                        "filter", r.filter, r.filterPriority
+                    );
+                } else {
+                    document.documentElement.style.removeProperty("filter");
+                }
+            }
+
+            if (this.overlay) {
+                this.overlay.remove();
+                this.overlay = null;
+            }
+
+            if (this.styleTag) {
+                this.styleTag.remove();
+                this.styleTag = null;
+            }
+
+            this.original = null;
+        }
+    }
+
+    Scratch.extensions.register(new WebpageEffects());
+})(Scratch);
