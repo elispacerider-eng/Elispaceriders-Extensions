@@ -1,0 +1,450 @@
+
+(function (Scratch) {
+  "use strict";
+
+  if (!Scratch.extensions.unsandboxed) {
+    throw new Error("Internet Radio requires an unsandboxed extension.");
+  }
+
+  const GENRES = [
+    "Random",
+    "Jazz",
+    "Rock",
+    "Pop",
+    "Classical",
+    "Hip-Hop",
+    "Electronic",
+    "Country",
+    "Reggae",
+    "Blues",
+    "Metal",
+    "Ambient",
+    "Folk",
+    "Soul",
+    "News",
+    "Talk",
+    "Dance",
+    "Latin",
+    "Indie",
+    "R&B"
+  ];
+
+  const RANDOM_GENRES = GENRES.filter(g => g !== "Random");
+
+  class InternetRadio {
+    constructor() {
+      this.audio = new Audio();
+      this.audio.preload = "none";
+      this.audio.volume = 0.5;
+
+      this.stations = [];
+      this.stationIndex = -1;
+      this.genre = "Random";
+      this.actualGenre = "";
+      this.state = "stopped";
+      this.error = "";
+      this.requestId = 0;
+      this.lastStation = "";
+      this.userStopped = false;
+
+      // Tracks whether playback has actually started.
+      this.playbackStarted = false;
+      this.songOver = false;
+
+      this.audio.addEventListener("playing", () => {
+        this.state = "playing";
+        this.error = "";
+        this.playbackStarted = true;
+        this.songOver = false;
+      });
+
+      this.audio.addEventListener("ended", () => {
+        this.songOver = true;
+        this.state = "stopped";
+      });
+
+      this.audio.addEventListener("waiting", () => {
+        if (!this.userStopped) this.state = "loading";
+      });
+
+      this.audio.addEventListener("pause", () => {
+        if (this.userStopped) {
+          this.state = "stopped";
+        }
+      });
+
+      this.audio.addEventListener("error", () => {
+        if (!this.userStopped) {
+          this.state = "error";
+          this.error = "The station could not be played. Try another station.";
+        }
+      });
+    }
+
+    getInfo() {
+      return {
+        id: "internetRadio",
+        name: "Internet Radio",
+        color1: "#7B45C9",
+        color2: "#6435A8",
+        color3: "#4B2585",
+
+        blocks: [
+          {
+            opcode: "playRadio",
+            blockType: Scratch.BlockType.COMMAND,
+            text: "play radio"
+          },
+          {
+            opcode: "stopRadio",
+            blockType: Scratch.BlockType.COMMAND,
+            text: "stop radio"
+          },
+          {
+            opcode: "nextStation",
+            blockType: Scratch.BlockType.COMMAND,
+            text: "play next station"
+          },
+          {
+            opcode: "previousStation",
+            blockType: Scratch.BlockType.COMMAND,
+            text: "play previous station"
+          },
+          {
+            opcode: "setGenre",
+            blockType: Scratch.BlockType.COMMAND,
+            text: "set radio genre to [GENRE]",
+            arguments: {
+              GENRE: {
+                type: Scratch.ArgumentType.STRING,
+                menu: "genres",
+                defaultValue: "Random"
+              }
+            }
+          },
+          {
+            opcode: "randomGenre",
+            blockType: Scratch.BlockType.COMMAND,
+            text: "choose random radio genre"
+          },
+          {
+            opcode: "radioGenre",
+            blockType: Scratch.BlockType.REPORTER,
+            text: "radio genre"
+          },
+          {
+            opcode: "radioState",
+            blockType: Scratch.BlockType.REPORTER,
+            text: "radio state"
+          },
+          {
+            opcode: "currentStation",
+            blockType: Scratch.BlockType.REPORTER,
+            text: "current radio station"
+          },
+          {
+            opcode: "stationsFound",
+            blockType: Scratch.BlockType.REPORTER,
+            text: "stations found"
+          },
+          {
+            opcode: "setVolume",
+            blockType: Scratch.BlockType.COMMAND,
+            text: "set radio volume to [VOLUME] %",
+            arguments: {
+              VOLUME: {
+                type: Scratch.ArgumentType.NUMBER,
+                defaultValue: 50
+              }
+            }
+          },
+          {
+            opcode: "getVolume",
+            blockType: Scratch.BlockType.REPORTER,
+            text: "radio volume"
+          },
+          {
+            opcode: "radioError",
+            blockType: Scratch.BlockType.REPORTER,
+            text: "radio error"
+          },
+          {
+            opcode: "radioIsPlaying",
+            blockType: Scratch.BlockType.BOOLEAN,
+            text: "radio is playing?"
+          },
+          {
+            opcode: "isSongOver",
+            blockType: Scratch.BlockType.BOOLEAN,
+            text: "is song over?"
+          }
+        ],
+
+        menus: {
+          genres: {
+            acceptReporters: false,
+            items: GENRES
+          }
+        }
+      };
+    }
+
+    async setGenre(args) {
+      const chosen = String(args.GENRE || "Random");
+
+      if (chosen === "Random") {
+        this.genre = "Random";
+        this.actualGenre =
+          RANDOM_GENRES[
+            Math.floor(Math.random() * RANDOM_GENRES.length)
+          ];
+      } else {
+        this.genre = chosen;
+        this.actualGenre = chosen;
+      }
+
+      this.stations = [];
+      this.stationIndex = -1;
+      this.error = "";
+
+      if (this.state === "playing" || this.state === "loading") {
+        await this.loadStations(true);
+      }
+    }
+
+    async randomGenre() {
+      this.genre = "Random";
+      this.actualGenre =
+        RANDOM_GENRES[
+          Math.floor(Math.random() * RANDOM_GENRES.length)
+        ];
+
+      this.stations = [];
+      this.stationIndex = -1;
+      this.error = "";
+
+      await this.loadStations(true);
+    }
+
+    async playRadio() {
+      this.userStopped = false;
+      this.songOver = false;
+      await this.loadStations(true);
+    }
+
+    async loadStations(autoplay) {
+      const request = ++this.requestId;
+
+      this.userStopped = false;
+      this.state = "loading";
+      this.error = "";
+
+      const genreToSearch =
+        this.actualGenre ||
+        (this.genre === "Random"
+          ? RANDOM_GENRES[
+              Math.floor(Math.random() * RANDOM_GENRES.length)
+            ]
+          : this.genre);
+
+      this.actualGenre = genreToSearch;
+
+      try {
+        const tag = encodeURIComponent(genreToSearch.toLowerCase());
+
+        const response = await fetch(
+          "https://de1.api.radio-browser.info/json/stations/bytag/" +
+            tag +
+            "?limit=100&hidebroken=true&order=clickcount&reverse=true",
+          {
+            headers: {
+              Accept: "application/json"
+            }
+          }
+        );
+
+        if (!response.ok) {
+          throw new Error(
+            "Radio directory returned HTTP " + response.status
+          );
+        }
+
+        const data = await response.json();
+
+        if (request !== this.requestId) return;
+
+        this.stations = data.filter(station => {
+          const url = station.url_resolved || station.url || "";
+
+          return (
+            typeof url === "string" &&
+            url.startsWith("https://") &&
+            station.name
+          );
+        });
+
+        if (this.stations.length === 0) {
+          if (
+            this.genre === "Random" &&
+            RANDOM_GENRES.length > 1
+          ) {
+            const otherGenres = RANDOM_GENRES.filter(
+              genre => genre !== genreToSearch
+            );
+
+            this.actualGenre =
+              otherGenres[
+                Math.floor(Math.random() * otherGenres.length)
+              ];
+
+            await this.loadStations(autoplay);
+            return;
+          }
+
+          this.state = "error";
+          this.error =
+            "No HTTPS stations found for " +
+            genreToSearch +
+            ". Try another genre.";
+          return;
+        }
+
+        this.stationIndex = -1;
+
+        if (autoplay) {
+          await this.playStationAt(0);
+        } else {
+          this.state = "stopped";
+        }
+      } catch (err) {
+        if (request !== this.requestId) return;
+
+        this.state = "error";
+        this.error = String(err.message || err);
+      }
+    }
+
+    async playStationAt(index) {
+      if (!this.stations.length) {
+        this.error = "No stations loaded. Use play radio first.";
+        this.state = "error";
+        return;
+      }
+
+      this.userStopped = false;
+      this.songOver = false;
+      this.playbackStarted = false;
+
+      const count = this.stations.length;
+      this.stationIndex = ((index % count) + count) % count;
+
+      const station = this.stations[this.stationIndex];
+      const url = station.url_resolved || station.url;
+
+      this.lastStation = station.name || "Unknown station";
+      this.state = "loading";
+      this.error = "";
+
+      try {
+        this.audio.pause();
+        this.audio.src = url;
+        this.audio.load();
+
+        await this.audio.play();
+        this.state = "playing";
+      } catch (err) {
+        this.state = "error";
+        this.error =
+          "Could not play this station. Try next station. " +
+          String(err.message || err);
+      }
+    }
+
+    async nextStation() {
+      this.songOver = false;
+
+      if (!this.stations.length) {
+        await this.loadStations(true);
+        return;
+      }
+
+      await this.playStationAt(this.stationIndex + 1);
+    }
+
+    async previousStation() {
+      this.songOver = false;
+
+      if (!this.stations.length) {
+        await this.loadStations(true);
+        return;
+      }
+
+      await this.playStationAt(this.stationIndex - 1);
+    }
+
+    stopRadio() {
+      this.userStopped = true;
+      this.requestId++;
+
+      this.audio.pause();
+      this.audio.removeAttribute("src");
+      this.audio.load();
+
+      this.state = "stopped";
+      this.error = "";
+      this.songOver = false;
+      this.playbackStarted = false;
+    }
+
+    setVolume(args) {
+      const value = Number(args.VOLUME);
+      const safeValue = Number.isFinite(value) ? value : 50;
+
+      this.audio.volume = Math.max(
+        0,
+        Math.min(100, safeValue)
+      ) / 100;
+    }
+
+    getVolume() {
+      return Math.round(this.audio.volume * 100);
+    }
+
+    radioGenre() {
+      return this.actualGenre || this.genre;
+    }
+
+    radioState() {
+      return this.state;
+    }
+
+    currentStation() {
+      return this.lastStation || "None";
+    }
+
+    stationsFound() {
+      return this.stations.length;
+    }
+
+    radioError() {
+      return this.error;
+    }
+
+    radioIsPlaying() {
+      return (
+        !this.audio.paused &&
+        !this.audio.ended &&
+        this.state === "playing"
+      );
+    }
+
+    isSongOver() {
+      return this.songOver || (
+        this.playbackStarted &&
+        this.audio.ended
+      );
+    }
+  }
+
+  Scratch.extensions.register(new InternetRadio());
+})(Scratch);
