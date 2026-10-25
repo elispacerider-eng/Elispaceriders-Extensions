@@ -1,0 +1,440 @@
+(function (Scratch) {
+  'use strict';
+
+  if (!Scratch.extensions.unsandboxed) {
+    throw new Error('This extension requires unsandboxed mode.');
+  }
+
+  const vm = Scratch.vm;
+  const runtime = vm.runtime;
+
+  class SpriteOutsideCanvas {
+    constructor() {
+      this.spriteName = '';
+      this.enabled = false;
+      this.images = new WeakMap();
+      this.overlayScale = 100;
+      this.maxMargin = 3000;
+      this.running = true;
+
+      this.canvas = document.createElement('canvas');
+      this.ctx = this.canvas.getContext('2d');
+
+      Object.assign(this.canvas.style, {
+        position: 'fixed',
+        display: 'none',
+        pointerEvents: 'none',
+        zIndex: '2147483647',
+        padding: '0',
+        margin: '0',
+        border: '0',
+        maxWidth: 'none',
+        maxHeight: 'none'
+      });
+
+      document.body.appendChild(this.canvas);
+
+      this.loop = () => {
+        if (!this.running) return;
+        try {
+          this.renderOverlay();
+        } catch (error) {
+          console.error('[Sprite Outside Canvas]', error);
+        }
+        requestAnimationFrame(this.loop);
+      };
+
+      requestAnimationFrame(this.loop);
+
+      window.addEventListener('beforeunload', () => {
+        this.running = false;
+        this.canvas.remove();
+      });
+    }
+
+    getInfo() {
+      return {
+        id: 'spriteoutsidecanvas',
+        name: 'Sprite Outside Canvas',
+        color1: '#7952CC',
+        color2: '#643DB5',
+        color3: '#4F2D96',
+
+        blocks: [
+          {
+            opcode: 'chooseSprite',
+            blockType: Scratch.BlockType.COMMAND,
+            text: 'choose sprite [SPRITE]',
+            arguments: {
+              SPRITE: {
+                type: Scratch.ArgumentType.STRING,
+                menu: 'sprites'
+              }
+            }
+          },
+          {
+            opcode: 'setOutside',
+            blockType: Scratch.BlockType.COMMAND,
+            text: 'show sprite outside canvas [ON]',
+            arguments: {
+              ON: {
+                type: Scratch.ArgumentType.STRING,
+                menu: 'onOff'
+              }
+            }
+          },
+          {
+            opcode: 'moveTo',
+            blockType: Scratch.BlockType.COMMAND,
+            text: 'move selected sprite to x [X] y [Y]',
+            arguments: {
+              X: {
+                type: Scratch.ArgumentType.NUMBER,
+                defaultValue: 250
+              },
+              Y: {
+                type: Scratch.ArgumentType.NUMBER,
+                defaultValue: 0
+              }
+            }
+          },
+          {
+            opcode: 'changeBy',
+            blockType: Scratch.BlockType.COMMAND,
+            text: 'change selected sprite x by [X] y by [Y]',
+            arguments: {
+              X: {
+                type: Scratch.ArgumentType.NUMBER,
+                defaultValue: 10
+              },
+              Y: {
+                type: Scratch.ArgumentType.NUMBER,
+                defaultValue: 0
+              }
+            }
+          },
+          {
+            opcode: 'bringInside',
+            blockType: Scratch.BlockType.COMMAND,
+            text: 'bring selected sprite inside canvas'
+          },
+          {
+            opcode: 'setSize',
+            blockType: Scratch.BlockType.COMMAND,
+            text: 'set outside display size to [SIZE] %',
+            arguments: {
+              SIZE: {
+                type: Scratch.ArgumentType.NUMBER,
+                defaultValue: 100
+              }
+            }
+          },
+          {
+            opcode: 'getX',
+            blockType: Scratch.BlockType.REPORTER,
+            text: 'selected sprite x position'
+          },
+          {
+            opcode: 'getY',
+            blockType: Scratch.BlockType.REPORTER,
+            text: 'selected sprite y position'
+          },
+          {
+            opcode: 'disable',
+            blockType: Scratch.BlockType.COMMAND,
+            text: 'disable outside display'
+          }
+        ],
+
+        menus: {
+          sprites: {
+            acceptReporters: true,
+            items: 'spriteMenu'
+          },
+          onOff: {
+            acceptReporters: false,
+            items: [
+              { text: 'yes', value: 'yes' },
+              { text: 'no', value: 'no' }
+            ]
+          }
+        }
+      };
+    }
+
+    getTargets() {
+      return vm.runtime.targets.filter(target => !target.isStage);
+    }
+
+    spriteMenu() {
+      const names = this.getTargets().map(target => target.getName());
+      return names.length ? names : [''];
+    }
+
+    chooseSprite(args) {
+      this.spriteName = String(args.SPRITE || '');
+    }
+
+    getTarget() {
+      return this.getTargets().find(
+        target => target.getName() === this.spriteName
+      );
+    }
+
+    setOutside(args) {
+      this.enabled = String(args.ON) === 'yes';
+      if (!this.enabled) this.hide();
+    }
+
+    moveTo(args) {
+      const target = this.getTarget();
+      if (!target) return;
+
+      target.setXY(
+        Scratch.Cast.toNumber(args.X),
+        Scratch.Cast.toNumber(args.Y)
+      );
+    }
+
+    changeBy(args) {
+      const target = this.getTarget();
+      if (!target) return;
+
+      target.setXY(
+        target.x + Scratch.Cast.toNumber(args.X),
+        target.y + Scratch.Cast.toNumber(args.Y)
+      );
+    }
+
+    bringInside() {
+      const target = this.getTarget();
+      if (!target) return;
+
+      const costume = target.sprite.costumes[target.currentCostume];
+      const scale = Math.abs(target.size) / 100;
+
+      let halfW = 0;
+      let halfH = 0;
+
+      if (costume && costume.size) {
+        const resolution = costume.bitmapResolution || 1;
+        halfW = costume.size[0] / resolution * scale / 2;
+        halfH = costume.size[1] / resolution * scale / 2;
+      }
+
+      target.setXY(
+        Math.max(-240 + Math.min(halfW, 240),
+          Math.min(240 - Math.min(halfW, 240), target.x)),
+        Math.max(-180 + Math.min(halfH, 180),
+          Math.min(180 - Math.min(halfH, 180), target.y))
+      );
+    }
+
+    setSize(args) {
+      this.overlayScale = Math.max(
+        1,
+        Math.min(1000, Scratch.Cast.toNumber(args.SIZE))
+      );
+    }
+
+    getX() {
+      const target = this.getTarget();
+      return target ? target.x : 0;
+    }
+
+    getY() {
+      const target = this.getTarget();
+      return target ? target.y : 0;
+    }
+
+    disable() {
+      this.enabled = false;
+      this.hide();
+    }
+
+    hide() {
+      this.canvas.style.display = 'none';
+      this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    }
+
+    getStageCanvas() {
+      const renderer = vm.renderer;
+      return renderer && renderer.canvas;
+    }
+
+    getCostumeImage(target) {
+      const costume = target.sprite.costumes[target.currentCostume];
+      if (!costume || !costume.asset) return null;
+
+      const asset = costume.asset;
+      let image = this.images.get(asset);
+
+      if (!image) {
+        image = new Image();
+
+        try {
+          image.src = asset.encodeDataURI();
+        } catch (error) {
+          console.warn(
+            '[Sprite Outside Canvas] Could not load costume image.',
+            error
+          );
+          return null;
+        }
+
+        this.images.set(asset, image);
+      }
+
+      if (!image.complete || !image.naturalWidth) return null;
+
+      return { image, costume };
+    }
+
+    renderOverlay() {
+      if (!this.enabled) {
+        this.hide();
+        return;
+      }
+
+      const target = this.getTarget();
+      const stage = this.getStageCanvas();
+
+      if (!target || !stage || !target.visible) {
+        this.hide();
+        return;
+      }
+
+      const result = this.getCostumeImage(target);
+      if (!result) {
+        this.hide();
+        return;
+      }
+
+      const { image, costume } = result;
+      const rect = stage.getBoundingClientRect();
+
+      if (!rect.width || !rect.height) {
+        this.hide();
+        return;
+      }
+
+      const dpr = window.devicePixelRatio || 1;
+      const scale = this.overlayScale / 100;
+      const resolution = costume.bitmapResolution || 1;
+
+      const spriteW =
+        image.naturalWidth / resolution *
+        Math.abs(target.size) / 100 * scale *
+        rect.width / 480;
+
+      const spriteH =
+        image.naturalHeight / resolution *
+        Math.abs(target.size) / 100 * scale *
+        rect.height / 360;
+
+      const centerScreenX = rect.left + rect.width / 2 +
+        target.x * rect.width / 480;
+
+      const centerScreenY = rect.top + rect.height / 2 -
+        target.y * rect.height / 360;
+
+      // Expand the overlay to include the sprite, even outside the stage.
+      const margin = Math.min(
+        this.maxMargin,
+        Math.ceil(Math.max(
+          80,
+          rect.left + rect.width - centerScreenX + spriteW,
+          centerScreenX - rect.left + spriteW,
+          rect.top + rect.height - centerScreenY + spriteH,
+          centerScreenY - rect.top + spriteH
+        ))
+      );
+
+      const left = rect.left - margin;
+      const top = rect.top - margin;
+      const cssW = rect.width + margin * 2;
+      const cssH = rect.height + margin * 2;
+
+      this.canvas.style.left = left + 'px';
+      this.canvas.style.top = top + 'px';
+      this.canvas.style.width = cssW + 'px';
+      this.canvas.style.height = cssH + 'px';
+      this.canvas.style.display = 'block';
+
+      const pixelW = Math.max(1, Math.ceil(cssW * dpr));
+      const pixelH = Math.max(1, Math.ceil(cssH * dpr));
+
+      if (this.canvas.width !== pixelW ||
+          this.canvas.height !== pixelH) {
+        this.canvas.width = pixelW;
+        this.canvas.height = pixelH;
+      }
+
+      const ctx = this.ctx;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, cssW, cssH);
+
+      const x = margin + rect.width / 2 +
+        target.x * rect.width / 480;
+
+      const y = margin + rect.height / 2 -
+        target.y * rect.height / 360;
+
+      const drawW = spriteW;
+      const drawH = spriteH;
+
+      const rotationCenter = costume.rotationCenter || [
+        image.naturalWidth / 2,
+        image.naturalHeight / 2
+      ];
+
+      // Scratch direction 90 is right, 0 is up.
+      let angle = (90 - target.direction) * Math.PI / 180;
+
+      // Rotation style 1 is left-right only.
+      if (target.rotationStyle === 1) angle = 0;
+
+      const flipX = target.size < 0 ||
+        (target.rotationStyle === 1 && target.direction < 0);
+
+      const originX =
+        (image.naturalWidth / 2 - rotationCenter[0]) /
+        resolution * Math.abs(target.size) / 100 * scale *
+        rect.width / 480;
+
+      const originY =
+        (rotationCenter[1] - image.naturalHeight / 2) /
+        resolution * Math.abs(target.size) / 100 * scale *
+        rect.height / 360;
+
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(angle);
+      ctx.scale(flipX ? -1 : 1, 1);
+
+      ctx.drawImage(
+        image,
+        originX - drawW / 2,
+        originY - drawH / 2,
+        drawW,
+        drawH
+      );
+
+      ctx.restore();
+
+      // Clear the overlay's copy inside the stage rectangle.
+      // The normal Scratch-rendered sprite remains visible there.
+      ctx.save();
+      ctx.globalCompositeOperation = 'destination-out';
+      ctx.fillRect(
+        margin,
+        margin,
+        rect.width,
+        rect.height
+      );
+      ctx.restore();
+    }
+  }
+
+  Scratch.extensions.register(new SpriteOutsideCanvas());
+})(Scratch);
