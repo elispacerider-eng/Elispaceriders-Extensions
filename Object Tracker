@@ -1,0 +1,1118 @@
+
+(function (Scratch) {
+    "use strict";
+
+    if (!Scratch.extensions.unsandboxed) {
+        throw new Error("Camera Object Tracker requires an unsandboxed extension.");
+    }
+
+    const MAX_TRACKERS = 50;
+    const FRAME_W = 240;
+    const FRAME_H = 180;
+    const PATCH = 20;
+
+    class MultiCameraTracker {
+        constructor() {
+            this.video = document.createElement("video");
+            this.video.autoplay = true;
+            this.video.muted = true;
+            this.video.playsInline = true;
+
+            this.canvas = document.createElement("canvas");
+            this.canvas.width = FRAME_W;
+            this.canvas.height = FRAME_H;
+            this.ctx = this.canvas.getContext("2d", {
+                willReadFrequently: true
+            });
+
+            this.trackers = [this.makeTracker(1)];
+            this.stream = null;
+            this.cameraWanted = false;
+            this.trackingWanted = false;
+            this.facing = "environment";
+            this.requestId = 0;
+            this.raf = null;
+            this.retryTimer = null;
+            this.retryDelay = 2000;
+            this.frameCount = 0;
+            this.threshold = 0.68;
+            this.smoothing = 0.55;
+            this.status = "Add a target image to tracker 1";
+            this.panel = null;
+            this.preview = null;
+            this.info = null;
+            this.fileInput = null;
+            this.selectingTracker = 1;
+        }
+
+        makeTracker(id) {
+            return {
+                id,
+                name: "Tracker " + id,
+                template: null,
+                targetWidth: PATCH,
+                targetHeight: PATCH,
+                x: 0,
+                y: 0,
+                z: 0,
+                confidence: 0,
+                found: false,
+                cx: null,
+                cy: null,
+                w: null,
+                h: null,
+                vx: 0,
+                vy: 0,
+                misses: 0,
+                box: null
+            };
+        }
+
+        getInfo() {
+            return {
+                id: "multiCameraObjectTracker",
+                name: "Multi Object Tracker",
+                color1: "#0D9488",
+                color2: "#0F766E",
+                color3: "#115E59",
+                blocks: [
+                    {
+                        opcode: "addTracker",
+                        blockType: Scratch.BlockType.COMMAND,
+                        text: "add another tracker"
+                    },
+                    {
+                        opcode: "chooseTarget",
+                        blockType: Scratch.BlockType.COMMAND,
+                        text: "use image as target for [TRACKER]",
+                        arguments: {
+                            TRACKER: {
+                                type: Scratch.ArgumentType.STRING,
+                                menu: "trackerMenu"
+                            }
+                        }
+                    },
+                    {
+                        opcode: "captureTarget",
+                        blockType: Scratch.BlockType.COMMAND,
+                        text: "capture camera image as target for [TRACKER]",
+                        arguments: {
+                            TRACKER: {
+                                type: Scratch.ArgumentType.STRING,
+                                menu: "trackerMenu"
+                            }
+                        }
+                    },
+                    {
+                        opcode: "startCamera",
+                        blockType: Scratch.BlockType.COMMAND,
+                        text: "turn camera on"
+                    },
+                    {
+                        opcode: "switchFront",
+                        blockType: Scratch.BlockType.COMMAND,
+                        text: "switch to front camera"
+                    },
+                    {
+                        opcode: "switchBack",
+                        blockType: Scratch.BlockType.COMMAND,
+                        text: "switch to back camera"
+                    },
+                    {
+                        opcode: "startTracking",
+                        blockType: Scratch.BlockType.COMMAND,
+                        text: "start tracking all targets"
+                    },
+                    {
+                        opcode: "stopTracking",
+                        blockType: Scratch.BlockType.COMMAND,
+                        text: "stop tracking"
+                    },
+                    {
+                        opcode: "cameraOff",
+                        blockType: Scratch.BlockType.COMMAND,
+                        text: "turn camera off"
+                    },
+                    {
+                        opcode: "setThreshold",
+                        blockType: Scratch.BlockType.COMMAND,
+                        text: "set match threshold to [N] %",
+                        arguments: {
+                            N: {
+                                type: Scratch.ArgumentType.NUMBER,
+                                defaultValue: 68
+                            }
+                        }
+                    },
+                    {
+                        opcode: "setSmoothing",
+                        blockType: Scratch.BlockType.COMMAND,
+                        text: "set smoothing to [N] %",
+                        arguments: {
+                            N: {
+                                type: Scratch.ArgumentType.NUMBER,
+                                defaultValue: 55
+                            }
+                        }
+                    },
+                    {
+                        opcode: "getX",
+                        blockType: Scratch.BlockType.REPORTER,
+                        text: "tracker [TRACKER] X",
+                        arguments: {
+                            TRACKER: {
+                                type: Scratch.ArgumentType.STRING,
+                                menu: "trackerMenu"
+                            }
+                        }
+                    },
+                    {
+                        opcode: "getY",
+                        blockType: Scratch.BlockType.REPORTER,
+                        text: "tracker [TRACKER] Y",
+                        arguments: {
+                            TRACKER: {
+                                type: Scratch.ArgumentType.STRING,
+                                menu: "trackerMenu"
+                            }
+                        }
+                    },
+                    {
+                        opcode: "getZ",
+                        blockType: Scratch.BlockType.REPORTER,
+                        text: "tracker [TRACKER] relative Z",
+                        arguments: {
+                            TRACKER: {
+                                type: Scratch.ArgumentType.STRING,
+                                menu: "trackerMenu"
+                            }
+                        }
+                    },
+                    {
+                        opcode: "getConfidence",
+                        blockType: Scratch.BlockType.REPORTER,
+                        text: "tracker [TRACKER] confidence %",
+                        arguments: {
+                            TRACKER: {
+                                type: Scratch.ArgumentType.STRING,
+                                menu: "trackerMenu"
+                            }
+                        }
+                    },
+                    {
+                        opcode: "isFound",
+                        blockType: Scratch.BlockType.BOOLEAN,
+                        text: "tracker [TRACKER] found?",
+                        arguments: {
+                            TRACKER: {
+                                type: Scratch.ArgumentType.STRING,
+                                menu: "trackerMenu"
+                            }
+                        }
+                    },
+                    {
+                        opcode: "touching",
+                        blockType: Scratch.BlockType.BOOLEAN,
+                        text: "tracker [A] touches tracker [B]?",
+                        arguments: {
+                            A: {
+                                type: Scratch.ArgumentType.STRING,
+                                menu: "trackerMenu"
+                            },
+                            B: {
+                                type: Scratch.ArgumentType.STRING,
+                                menu: "trackerMenu"
+                            }
+                        }
+                    },
+                    {
+                        opcode: "hovering",
+                        blockType: Scratch.BlockType.BOOLEAN,
+                        text: "tracker [A] hovers over tracker [B]?",
+                        arguments: {
+                            A: {
+                                type: Scratch.ArgumentType.STRING,
+                                menu: "trackerMenu"
+                            },
+                            B: {
+                                type: Scratch.ArgumentType.STRING,
+                                menu: "trackerMenu"
+                            }
+                        }
+                    },
+                    {
+                        opcode: "cameraIsOn",
+                        blockType: Scratch.BlockType.BOOLEAN,
+                        text: "camera is on?"
+                    },
+                    {
+                        opcode: "trackingIsOn",
+                        blockType: Scratch.BlockType.BOOLEAN,
+                        text: "tracking is running?"
+                    },
+                    {
+                        opcode: "getFacing",
+                        blockType: Scratch.BlockType.REPORTER,
+                        text: "selected camera"
+                    },
+                    {
+                        opcode: "getStatus",
+                        blockType: Scratch.BlockType.REPORTER,
+                        text: "tracker status"
+                    },
+                    {
+                        opcode: "showPreview",
+                        blockType: Scratch.BlockType.COMMAND,
+                        text: "show camera preview"
+                    },
+                    {
+                        opcode: "hidePreview",
+                        blockType: Scratch.BlockType.COMMAND,
+                        text: "hide camera preview"
+                    },
+                    {
+                        opcode: "reset",
+                        blockType: Scratch.BlockType.COMMAND,
+                        text: "reset all tracker positions"
+                    }
+                ],
+                menus: {
+                    trackerMenu: {
+                        acceptReporters: true,
+                        items: "getTrackerMenu"
+                    }
+                }
+            };
+        }
+
+        getTrackerMenu() {
+            return this.trackers.map(t => ({
+                text: String(t.id),
+                value: String(t.id)
+            }));
+        }
+
+        getTracker(value) {
+            const id = Math.max(1, Math.floor(Number(value) || 1));
+            return this.trackers.find(t => t.id === id) || null;
+        }
+
+        addTracker() {
+            if (this.trackers.length >= MAX_TRACKERS) {
+                this.status = "Maximum of " + MAX_TRACKERS + " trackers reached";
+                this.updateInfo();
+                return;
+            }
+
+            const id = this.trackers.length + 1;
+            this.trackers.push(this.makeTracker(id));
+            this.status = "Added tracker " + id;
+            this.updateInfo();
+        }
+
+        chooseTarget(args) {
+            const t = this.getTracker(args.TRACKER);
+            if (!t) return;
+
+            this.selectingTracker = t.id;
+
+            if (!this.fileInput) {
+                this.fileInput = document.createElement("input");
+                this.fileInput.type = "file";
+                this.fileInput.accept = "image/*";
+                this.fileInput.style.display = "none";
+                document.body.appendChild(this.fileInput);
+
+                this.fileInput.addEventListener("change", () => {
+                    const file = this.fileInput.files &&
+                        this.fileInput.files[0];
+                    if (!file) return;
+
+                    const id = this.selectingTracker;
+                    const url = URL.createObjectURL(file);
+                    const image = new Image();
+
+                    image.onload = () => {
+                        const target = this.getTracker(id);
+                        if (target) {
+                            this.setTarget(target, image, file.name);
+                            this.status = "Image loaded for tracker " + id;
+                        }
+
+                        URL.revokeObjectURL(url);
+                        this.fileInput.value = "";
+                        this.updateInfo();
+                    };
+
+                    image.onerror = () => {
+                        URL.revokeObjectURL(url);
+                        this.fileInput.value = "";
+                        this.status = "Could not load image";
+                        this.updateInfo();
+                    };
+
+                    image.src = url;
+                });
+            }
+
+            this.fileInput.value = "";
+            this.fileInput.click();
+        }
+
+        setTarget(t, image, name) {
+            const width = image.naturalWidth || image.width;
+            const height = image.naturalHeight || image.height;
+
+            if (!width || !height) return;
+
+            const scale = PATCH / Math.max(width, height);
+            const tw = Math.max(8, Math.round(width * scale));
+            const th = Math.max(8, Math.round(height * scale));
+
+            const c = document.createElement("canvas");
+            c.width = tw;
+            c.height = th;
+
+            const g = c.getContext("2d", {
+                willReadFrequently: true
+            });
+
+            g.drawImage(image, 0, 0, tw, th);
+
+            t.template = this.makeTemplate(
+                g.getImageData(0, 0, tw, th), tw, th
+            );
+
+            t.targetWidth = tw;
+            t.targetHeight = th;
+            t.name = name || ("Tracker " + t.id);
+            this.resetTracker(t);
+        }
+
+        makeTemplate(imageData, w, h) {
+            const data = imageData.data;
+            const gray = new Float32Array(w * h);
+            const color = new Float32Array(w * h * 3);
+            let mean = 0;
+
+            for (let i = 0; i < w * h; i++) {
+                const p = i * 4;
+                const r = data[p] / 255;
+                const g = data[p + 1] / 255;
+                const b = data[p + 2] / 255;
+
+                gray[i] = 0.299 * r + 0.587 * g + 0.114 * b;
+                mean += gray[i];
+
+                color[i * 3] = r;
+                color[i * 3 + 1] = g;
+                color[i * 3 + 2] = b;
+            }
+
+            mean /= gray.length;
+            let norm = 0;
+
+            for (let i = 0; i < gray.length; i++) {
+                gray[i] -= mean;
+                norm += gray[i] * gray[i];
+            }
+
+            norm = Math.sqrt(norm) || 1;
+            for (let i = 0; i < gray.length; i++) gray[i] /= norm;
+
+            const cm = [0, 0, 0];
+
+            for (let i = 0; i < gray.length; i++) {
+                for (let ch = 0; ch < 3; ch++) {
+                    cm[ch] += color[i * 3 + ch];
+                }
+            }
+
+            for (let ch = 0; ch < 3; ch++) cm[ch] /= gray.length;
+
+            let cn = 0;
+
+            for (let i = 0; i < gray.length; i++) {
+                for (let ch = 0; ch < 3; ch++) {
+                    const index = i * 3 + ch;
+                    color[index] -= cm[ch];
+                    cn += color[index] * color[index];
+                }
+            }
+
+            cn = Math.sqrt(cn) || 1;
+            for (let i = 0; i < color.length; i++) color[i] /= cn;
+
+            return { w, h, gray, color };
+        }
+
+        captureTarget(args) {
+            const t = this.getTracker(args.TRACKER);
+
+            if (!t) return;
+
+            if (!this.video.videoWidth || this.video.readyState < 2) {
+                this.status = "Turn the camera on before capturing";
+                this.updateInfo();
+                return;
+            }
+
+            const c = document.createElement("canvas");
+            c.width = this.video.videoWidth;
+            c.height = this.video.videoHeight;
+
+            c.getContext("2d").drawImage(this.video, 0, 0);
+            this.setTarget(t, c, "Captured image " + t.id);
+
+            this.status = "Captured target for tracker " + t.id;
+            this.updateInfo();
+        }
+
+        resetTracker(t) {
+            t.x = 0;
+            t.y = 0;
+            t.z = 0;
+            t.confidence = 0;
+            t.found = false;
+            t.cx = null;
+            t.cy = null;
+            t.w = null;
+            t.h = null;
+            t.vx = 0;
+            t.vy = 0;
+            t.misses = 0;
+            t.box = null;
+        }
+
+        reset() {
+            this.trackers.forEach(t => this.resetTracker(t));
+            this.status = "All tracker positions reset";
+            this.updateInfo();
+        }
+
+        // A normalized grayscale + color similarity score.
+        scorePatch(frame, x, y, w, h, template) {
+            const fw = frame.width;
+            const fh = frame.height;
+
+            if (x < 0 || y < 0 || x + w >= fw || y + h >= fh) {
+                return -1;
+            }
+
+            const n = template.w * template.h;
+            const gray = new Float32Array(n);
+            const rgb = new Float32Array(n * 3);
+            let mean = 0;
+
+            for (let ty = 0; ty < template.h; ty++) {
+                const sy = Math.min(
+                    fh - 1,
+                    Math.max(0, Math.round(y + (ty + 0.5) * h / template.h))
+                );
+
+                for (let tx = 0; tx < template.w; tx++) {
+                    const sx = Math.min(
+                        fw - 1,
+                        Math.max(0, Math.round(x + (tx + 0.5) * w / template.w))
+                    );
+
+                    const p = (sy * fw + sx) * 4;
+                    const i = ty * template.w + tx;
+                    const r = frame.data[p] / 255;
+                    const g = frame.data[p + 1] / 255;
+                    const b = frame.data[p + 2] / 255;
+
+                    gray[i] = 0.299 * r + 0.587 * g + 0.114 * b;
+                    mean += gray[i];
+
+                    rgb[i * 3] = r;
+                    rgb[i * 3 + 1] = g;
+                    rgb[i * 3 + 2] = b;
+                }
+            }
+
+            mean /= n;
+            let norm = 0;
+
+            for (let i = 0; i < n; i++) {
+                gray[i] -= mean;
+                norm += gray[i] * gray[i];
+            }
+
+            norm = Math.sqrt(norm) || 1;
+            let grayScore = 0;
+
+            for (let i = 0; i < n; i++) {
+                grayScore += (gray[i] / norm) * template.gray[i];
+            }
+
+            const cm = [0, 0, 0];
+
+            for (let i = 0; i < n; i++) {
+                for (let ch = 0; ch < 3; ch++) {
+                    cm[ch] += rgb[i * 3 + ch];
+                }
+            }
+
+            for (let ch = 0; ch < 3; ch++) cm[ch] /= n;
+
+            let cn = 0;
+
+            for (let i = 0; i < n; i++) {
+                for (let ch = 0; ch < 3; ch++) {
+                    const index = i * 3 + ch;
+                    rgb[index] -= cm[ch];
+                    cn += rgb[index] * rgb[index];
+                }
+            }
+
+            cn = Math.sqrt(cn) || 1;
+            let colorScore = 0;
+
+            for (let i = 0; i < rgb.length; i++) {
+                colorScore += (rgb[i] / cn) * template.color[i];
+            }
+
+            return Math.max(0, Math.min(
+                1, 0.55 * grayScore + 0.45 * colorScore
+            ));
+        }
+
+        search(frame, t) {
+            if (!t.template) return null;
+
+            const scales = [0.7, 0.9, 1, 1.2, 1.5, 1.9, 2.4, 3];
+            let best = null;
+
+            const predictedX = t.cx === null
+                ? FRAME_W / 2
+                : t.cx + t.vx * 0.6;
+
+            const predictedY = t.cy === null
+                ? FRAME_H / 2
+                : t.cy + t.vy * 0.6;
+
+            const globalSearch =
+                t.cx === null || t.misses >= 4 || this.frameCount % 30 === 0;
+
+            for (const scale of scales) {
+                const w = Math.round(t.template.w * scale);
+                const h = Math.round(t.template.h * scale);
+
+                if (w < 8 || h < 8 || w > FRAME_W || h > FRAME_H) continue;
+
+                let minX = 0;
+                let minY = 0;
+                let maxX = FRAME_W - w;
+                let maxY = FRAME_H - h;
+                let step = 7;
+
+                if (!globalSearch) {
+                    const radius = Math.min(90, 24 + t.misses * 15);
+
+                    minX = Math.max(0, Math.floor(predictedX - w / 2 - radius));
+                    maxX = Math.min(FRAME_W - w, Math.ceil(predictedX - w / 2 + radius));
+                    minY = Math.max(0, Math.floor(predictedY - h / 2 - radius));
+                    maxY = Math.min(FRAME_H - h, Math.ceil(predictedY - h / 2 + radius));
+                    step = 5;
+                }
+
+                for (let y = minY; y <= maxY; y += step) {
+                    for (let x = minX; x <= maxX; x += step) {
+                        let score = this.scorePatch(
+                            frame, x, y, w, h, t.template
+                        );
+
+                        if (t.cx !== null) {
+                            const distance = Math.hypot(
+                                x + w / 2 - predictedX,
+                                y + h / 2 - predictedY
+                            );
+                            score -= Math.min(0.08, distance / 10000);
+                        }
+
+                        if (!best || score > best.score) {
+                            best = {
+                                x, y, w, h,
+                                score: Math.max(0, Math.min(1, score))
+                            };
+                        }
+                    }
+                }
+            }
+
+            if (!best || best.score < this.threshold) return null;
+            return best;
+        }
+
+        async startCamera() {
+            this.cameraWanted = true;
+            const request = ++this.requestId;
+
+            if (this.stream &&
+                this.stream.getVideoTracks().some(t => t.readyState === "live")) {
+                if (this.trackingWanted) this.startLoop();
+                this.showPreview();
+                return;
+            }
+
+            if (!navigator.mediaDevices ||
+                !navigator.mediaDevices.getUserMedia) {
+                this.status = "Camera requires HTTPS or localhost";
+                this.updateInfo();
+                return;
+            }
+
+            try {
+                this.status = "Requesting camera permission";
+                this.updateInfo();
+
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: {
+                        facingMode: { ideal: this.facing },
+                        width: { ideal: 640 },
+                        height: { ideal: 480 }
+                    },
+                    audio: false
+                });
+
+                if (!this.cameraWanted || request !== this.requestId) {
+                    stream.getTracks().forEach(t => t.stop());
+                    return;
+                }
+
+                this.stream = stream;
+                this.video.srcObject = stream;
+                await this.video.play();
+
+                if (!this.cameraWanted || request !== this.requestId) {
+                    this.releaseCamera();
+                    return;
+                }
+
+                this.retryDelay = 2000;
+                this.status = this.trackingWanted
+                    ? "Tracking all targets"
+                    : "Camera on; tracking paused";
+
+                stream.getVideoTracks().forEach(track => {
+                    track.addEventListener("ended", () => {
+                        if (this.cameraWanted && this.stream === stream) {
+                            this.stream = null;
+                            this.status = "Camera interrupted; reconnecting";
+                            this.scheduleReconnect();
+                        }
+                    });
+                });
+
+                this.showPreview();
+                if (this.trackingWanted) this.startLoop();
+                this.updateInfo();
+            } catch (e) {
+                if (!this.cameraWanted || request !== this.requestId) return;
+                this.status = "Camera unavailable or permission denied";
+                this.updateInfo();
+                this.scheduleReconnect();
+            }
+        }
+
+        switchCamera(facing) {
+            this.facing = facing;
+            this.requestId++;
+
+            if (this.retryTimer !== null) {
+                clearTimeout(this.retryTimer);
+                this.retryTimer = null;
+            }
+
+            this.trackers.forEach(t => this.resetTracker(t));
+
+            const wasOn = this.cameraWanted;
+            this.status = facing === "user"
+                ? "Switching to front camera"
+                : "Switching to back camera";
+
+            if (wasOn) {
+                this.releaseCamera();
+                this.startCamera();
+            } else {
+                this.status = facing === "user"
+                    ? "Front camera selected"
+                    : "Back camera selected";
+            }
+
+            this.updateInfo();
+        }
+
+        switchFront() {
+            this.switchCamera("user");
+        }
+
+        switchBack() {
+            this.switchCamera("environment");
+        }
+
+        scheduleReconnect() {
+            if (!this.cameraWanted || this.retryTimer !== null) return;
+
+            this.retryTimer = setTimeout(() => {
+                this.retryTimer = null;
+                if (this.cameraWanted) this.startCamera();
+            }, this.retryDelay);
+
+            this.retryDelay = Math.min(15000, this.retryDelay * 2);
+        }
+
+        releaseCamera() {
+            if (this.stream) {
+                this.stream.getTracks().forEach(t => t.stop());
+                this.stream = null;
+            }
+
+            this.video.srcObject = null;
+        }
+
+        startTracking() {
+            this.trackingWanted = true;
+
+            if (!this.trackers.some(t => t.template)) {
+                this.status = "Choose an image for at least one tracker";
+                this.updateInfo();
+                return;
+            }
+
+            if (!this.stream) {
+                this.startCamera();
+            } else {
+                this.status = "Tracking all targets";
+                this.startLoop();
+                this.updateInfo();
+            }
+        }
+
+        stopTracking() {
+            this.trackingWanted = false;
+
+            if (this.raf !== null) {
+                cancelAnimationFrame(this.raf);
+                this.raf = null;
+            }
+
+            this.trackers.forEach(t => {
+                t.found = false;
+                t.confidence = 0;
+            });
+
+            this.status = this.cameraWanted
+                ? "Tracking paused; camera remains on"
+                : "Tracking stopped";
+
+            this.updateInfo();
+        }
+
+        cameraOff() {
+            this.cameraWanted = false;
+            this.trackingWanted = false;
+            this.requestId++;
+
+            if (this.retryTimer !== null) {
+                clearTimeout(this.retryTimer);
+                this.retryTimer = null;
+            }
+
+            if (this.raf !== null) {
+                cancelAnimationFrame(this.raf);
+                this.raf = null;
+            }
+
+            this.releaseCamera();
+
+            this.trackers.forEach(t => {
+                t.found = false;
+                t.confidence = 0;
+            });
+
+            this.status = "Camera off";
+            this.updateInfo();
+        }
+
+        startLoop() {
+            if (!this.trackingWanted || this.raf !== null) return;
+
+            const loop = () => {
+                this.raf = null;
+                if (!this.trackingWanted) return;
+
+                if (!this.stream || this.video.readyState < 2) {
+                    this.raf = requestAnimationFrame(loop);
+                    return;
+                }
+
+                this.frameCount++;
+                this.ctx.drawImage(this.video, 0, 0, FRAME_W, FRAME_H);
+
+                // Matching every third frame reduces CPU use with many targets.
+                if (this.frameCount % 3 === 0) {
+                    const frame = this.ctx.getImageData(
+                        0, 0, FRAME_W, FRAME_H
+                    );
+
+                    for (const t of this.trackers) {
+                        if (!t.template) {
+                            t.found = false;
+                            t.confidence = 0;
+                            continue;
+                        }
+
+                        try {
+                            const match = this.search(frame, t);
+
+                            if (match) {
+                                const cx = match.x + match.w / 2;
+                                const cy = match.y + match.h / 2;
+
+                                if (t.cx !== null) {
+                                    t.vx = t.vx * 0.5 + (cx - t.cx) * 0.5;
+                                    t.vy = t.vy * 0.5 + (cy - t.cy) * 0.5;
+                                    t.cx = t.cx * this.smoothing +
+                                        cx * (1 - this.smoothing);
+                                    t.cy = t.cy * this.smoothing +
+                                        cy * (1 - this.smoothing);
+                                    t.w = t.w * this.smoothing +
+                                        match.w * (1 - this.smoothing);
+                                    t.h = t.h * this.smoothing +
+                                        match.h * (1 - this.smoothing);
+                                } else {
+                                    t.cx = cx;
+                                    t.cy = cy;
+                                    t.w = match.w;
+                                    t.h = match.h;
+                                }
+
+                                t.box = {
+                                    x: t.cx - t.w / 2,
+                                    y: t.cy - t.h / 2,
+                                    w: t.w,
+                                    h: t.h
+                                };
+
+                                t.found = true;
+                                t.misses = 0;
+                                t.confidence = match.score * 100;
+                                t.x = (t.cx / FRAME_W) * 200 - 100;
+                                t.y = 100 - (t.cy / FRAME_H) * 200;
+                                t.z = t.w > 0 ? PATCH / t.w : 0;
+                            } else {
+                                t.misses++;
+                                t.confidence *= 0.7;
+
+                                if (t.misses >= 3) t.found = false;
+                            }
+                        } catch (e) {
+                            t.found = false;
+                            t.confidence = 0;
+                        }
+                    }
+
+                    this.drawPreview();
+                }
+
+                this.raf = requestAnimationFrame(loop);
+            };
+
+            this.raf = requestAnimationFrame(loop);
+        }
+
+        // Bounding-box overlap.
+        boxesOverlap(a, b) {
+            if (!a || !b) return false;
+
+            return a.x < b.x + b.w &&
+                a.x + a.w > b.x &&
+                a.y < b.y + b.h &&
+                a.y + a.h > b.y;
+        }
+
+        touching(args) {
+            const a = this.getTracker(args.A);
+            const b = this.getTracker(args.B);
+
+            return Boolean(a && b && a.found && b.found &&
+                this.boxesOverlap(a.box, b.box));
+        }
+
+        hovering(args) {
+            const a = this.getTracker(args.A);
+            const b = this.getTracker(args.B);
+
+            if (!a || !b || !a.found || !b.found ||
+                !a.box || !b.box) return false;
+
+            // "Hovering" means close together without overlapping.
+            const horizontalGap = Math.max(
+                0,
+                Math.max(
+                    a.box.x - (b.box.x + b.box.w),
+                    b.box.x - (a.box.x + a.box.w)
+                )
+            );
+
+            const verticalGap = Math.max(
+                0,
+                Math.max(
+                    a.box.y - (b.box.y + b.box.h),
+                    b.box.y - (a.box.y + a.box.h)
+                )
+            );
+
+            const distance = Math.hypot(horizontalGap, verticalGap);
+
+            return distance <= 12 &&
+                !this.boxesOverlap(a.box, b.box);
+        }
+
+        setThreshold(args) {
+            const n = Number(args.N);
+            this.threshold = Math.max(
+                0.2,
+                Math.min(0.95, (Number.isFinite(n) ? n : 68) / 100)
+            );
+        }
+
+        setSmoothing(args) {
+            const n = Number(args.N);
+            this.smoothing = Math.max(
+                0,
+                Math.min(0.95, (Number.isFinite(n) ? n : 55) / 100)
+            );
+        }
+
+        getX(args) {
+            const t = this.getTracker(args.TRACKER);
+            return t && t.found ? t.x : 0;
+        }
+
+        getY(args) {
+            const t = this.getTracker(args.TRACKER);
+            return t && t.found ? t.y : 0;
+        }
+
+        getZ(args) {
+            const t = this.getTracker(args.TRACKER);
+            return t && t.found ? t.z : 0;
+        }
+
+        getConfidence(args) {
+            const t = this.getTracker(args.TRACKER);
+            return t ? t.confidence : 0;
+        }
+
+        isFound(args) {
+            const t = this.getTracker(args.TRACKER);
+            return Boolean(t && t.found);
+        }
+
+        cameraIsOn() {
+            return Boolean(this.stream &&
+                this.stream.getVideoTracks().some(
+                    t => t.readyState === "live"
+                ));
+        }
+
+        trackingIsOn() {
+            return this.trackingWanted;
+        }
+
+        getFacing() {
+            return this.facing === "user" ? "Front" : "Back";
+        }
+
+        getStatus() {
+            return this.status;
+        }
+
+        showPreview() {
+            if (!this.panel) {
+                this.panel = document.createElement("div");
+
+                Object.assign(this.panel.style, {
+                    position: "fixed",
+                    top: "12px",
+                    right: "12px",
+                    width: "260px",
+                    zIndex: "2147483646",
+                    padding: "8px",
+                    background: "#101827",
+                    color: "white",
+                    border: "2px solid #0D9488",
+                    borderRadius: "10px",
+                    font: "12px sans-serif",
+                    boxSizing: "border-box"
+                });
+
+                this.preview = document.createElement("canvas");
+                this.preview.width = FRAME_W;
+                this.preview.height = FRAME_H;
+                this.preview.style.width = "100%";
+
+                this.info = document.createElement("div");
+                this.info.style.marginTop = "6px";
+                this.info.style.overflowWrap = "anywhere";
+
+                this.panel.appendChild(this.preview);
+                this.panel.appendChild(this.info);
+                document.body.appendChild(this.panel);
+            }
+
+            this.panel.style.display = "block";
+            this.drawPreview();
+        }
+
+        hidePreview() {
+            if (this.panel) this.panel.style.display = "none";
+        }
+
+        drawPreview() {
+            if (!this.preview || !this.panel ||
+                this.panel.style.display === "none") return;
+
+            const g = this.preview.getContext("2d");
+
+            if (this.video.readyState >= 2 && this.video.videoWidth) {
+                g.drawImage(this.video, 0, 0, FRAME_W, FRAME_H);
+            } else {
+                g.fillStyle = "#172033";
+                g.fillRect(0, 0, FRAME_W, FRAME_H);
+            }
+
+            for (const t of this.trackers) {
+                if (!t.found || !t.box) continue;
+
+                g.strokeStyle = "#35FF8A";
+                g.lineWidth = 2;
+                g.strokeRect(t.box.x, t.box.y, t.box.w, t.box.h);
+
+                g.fillStyle = "#35FF8A";
+                g.font = "11px sans-serif";
+                g.fillText("T" + t.id, t.box.x, Math.max(11, t.box.y - 3));
+            }
+
+            this.updateInfo();
+        }
+
+        updateInfo() {
+            if (!this.info || !this.panel ||
+                this.panel.style.display === "none") return;
+
+            const found = this.trackers.filter(t => t.found).length;
+
+            this.info.textContent =
+                this.status +
+                " | Camera: " + this.getFacing() +
+                " | Trackers: " + this.trackers.length +
+                " | Detected: " + found;
+        }
+    }
+
+    Scratch.extensions.register(new MultiCameraTracker());
+})(Scratch);
